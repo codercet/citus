@@ -131,6 +131,7 @@ extern void EndRemoteCopy(int64 shardId, List *connectionList, bool stopOnFailur
 extern Node * ProcessCopyStmt(CopyStmt *copyStatement, char *completionTag,
 							  const char *queryString);
 extern void CheckCopyPermissions(CopyStmt *copyStatement);
+extern bool IsCopyResultStmt(CopyStmt *copyStatement);
 
 
 #endif /* MULTI_COPY_H */

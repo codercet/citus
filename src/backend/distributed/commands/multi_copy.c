@@ -141,7 +141,6 @@ static FmgrInfo * TypeOutputFunctions(uint32 columnCount, Oid *typeIdArray,
 static Datum CoerceColumnValue(Datum inputValue, CopyCoercionData *coercionPath);
 static void CreateLocalTable(RangeVar *relation, char *nodeName, int32 nodePort);
 static List * CopyGetAttnums(TupleDesc tupDesc, Relation rel, List *attnamelist);
-static bool IsCopyResultStmt(CopyStmt *copyStatement);
 static bool CopyStatementHasFormat(CopyStmt *copyStatement, char *formatName);
 static bool IsCopyFromWorker(CopyStmt *copyStatement);
 static NodeAddress * MasterNodeAddress(CopyStmt *copyStatement);
@@ -2443,7 +2442,7 @@ CitusCopyDestReceiverDestroy(DestReceiver *destReceiver)
  * COPY "resultkey" FROM STDIN WITH (format result) statement, which is used
  * to copy query results from the coordinator into workers.
  */
-static bool
+bool
 IsCopyResultStmt(CopyStmt *copyStatement)
 {
 	return CopyStatementHasFormat(copyStatement, "result");
