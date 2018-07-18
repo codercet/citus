@@ -16,6 +16,7 @@
 #include "distributed/multi_executor.h"
 #include "distributed/multi_partitioning_utils.h"
 #include "distributed/multi_physical_planner.h"
+#include "distributed/multi_router_executor.h"
 #include "distributed/distributed_planner.h"
 #include "distributed/relation_access_tracking.h"
 #include "distributed/resource_lock.h"
@@ -35,8 +36,9 @@
 #include "utils/snapmgr.h"
 
 
-static void ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
-									  Query *selectQuery, EState *executorState);
+static HTAB * ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
+										Query *selectQuery, EState *executorState,
+										char *intermediateResultIdPrefix);
 
 
 /*
@@ -58,6 +60,8 @@ CoordinatorInsertSelectExecScan(CustomScanState *node)
 		Query *selectQuery = distributedPlan->insertSelectSubquery;
 		List *insertTargetList = distributedPlan->insertTargetList;
 		Oid targetRelationId = distributedPlan->targetRelationId;
+		char *intermediateResultIdPrefix = distributedPlan->intermediateResultIdPrefix;
+		HTAB *shardConnectionsHash = NULL;
 
 		ereport(DEBUG1, (errmsg("Collecting INSERT ... SELECT results on coordinator")));
 
@@ -71,8 +75,52 @@ CoordinatorInsertSelectExecScan(CustomScanState *node)
 			LockPartitionRelations(targetRelationId, RowExclusiveLock);
 		}
 
-		ExecuteSelectIntoRelation(targetRelationId, insertTargetList, selectQuery,
-								  executorState);
+		shardConnectionsHash = ExecuteSelectIntoRelation(targetRelationId,
+														 insertTargetList, selectQuery,
+														 executorState,
+														 intermediateResultIdPrefix);
+
+		if (distributedPlan->workerJob != NULL)
+		{
+			/*
+			 * If we also have a workerJob that means there is a second step
+			 * to the INSERT...SELECT. This happens when there is a RETURNING
+			 * or ON CONFLICT clause which is implemented as a separate
+			 * distributed INSERT...SELECT from a set of intermediate results
+			 * to the target relation.
+			 */
+			Job *workerJob = distributedPlan->workerJob;
+			ListCell *taskCell = NULL;
+			List *taskList = workerJob->taskList;
+			List *prunedTaskList = NIL;
+			bool hasReturning = distributedPlan->hasReturning;
+			bool isModificationQuery = true;
+
+			/*
+			 * We cannot actually execute INSERT...SELECT tasks that read from
+			 * intermediate results that weren't created because no rows were
+			 * written to them. Prune those tasks out by only including tasks
+			 * on shards with connections.
+			 */
+			foreach(taskCell, taskList)
+			{
+				Task *task = (Task *) lfirst(taskCell);
+				uint64 shardId = task->anchorShardId;
+				bool shardModified = false;
+
+				hash_search(shardConnectionsHash, &shardId, HASH_FIND, &shardModified);
+				if (shardModified)
+				{
+					prunedTaskList = lappend(prunedTaskList, task);
+				}
+			}
+
+			if (prunedTaskList != NIL)
+			{
+				ExecuteMultipleTasks(scanState, prunedTaskList, isModificationQuery,
+									 hasReturning);
+			}
+		}
 
 		scanState->finishedRemoteScan = true;
 	}
@@ -87,10 +135,18 @@ CoordinatorInsertSelectExecScan(CustomScanState *node)
  * ExecuteSelectIntoRelation executes given SELECT query and inserts the
  * results into the target relation, which is assumed to be a distributed
  * table.
+ *
+ * If intermediateResultIdPrefix is not NULL, the data is instead written
+ * to a set of intermediate results that are co-located with the table
+ * for further processing (ON CONFLICT).
+ *
+ * ExecuteSelectIntoRelation returns the hash of connections that were
+ * used to insert into the target relation.
  */
-static void
+static HTAB *
 ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
-						  Query *selectQuery, EState *executorState)
+						  Query *selectQuery, EState *executorState,
+						  char *intermediateResultIdPrefix)
 {
 	ParamListInfo paramListInfo = executorState->es_param_list_info;
 
@@ -135,7 +191,7 @@ ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
 	/* set up a DestReceiver that copies into the distributed table */
 	copyDest = CreateCitusCopyDestReceiver(targetRelationId, columnNameList,
 										   partitionColumnIndex, executorState,
-										   stopOnFailure);
+										   stopOnFailure, intermediateResultIdPrefix);
 
 	/*
 	 * Make a copy of the query, since ExecuteQueryIntoDestReceiver may scribble on it
@@ -149,4 +205,6 @@ ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
 	executorState->es_processed = copyDest->tuplesSent;
 
 	XactModificationLevel = XACT_MODIFICATION_DATA;
+
+	return copyDest->shardConnectionHash;
 }

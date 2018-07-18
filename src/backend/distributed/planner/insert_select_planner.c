@@ -24,6 +24,7 @@
 #include "distributed/multi_router_planner.h"
 #include "distributed/pg_dist_partition.h"
 #include "distributed/query_pushdown_planning.h"
+#include "distributed/recursive_planning.h"
 #include "distributed/resource_lock.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -60,10 +61,12 @@ static DeferredErrorMessage * InsertPartitionColumnMatchesSelect(Query *query,
 																 subqueryRte,
 																 Oid *
 																 selectPartitionColumnTableId);
-static DistributedPlan * CreateCoordinatorInsertSelectPlan(Query *parse);
+static DistributedPlan * CreateCoordinatorInsertSelectPlan(uint64 planId, Query *parse);
 static DeferredErrorMessage * CoordinatorInsertSelectSupported(Query *insertSelectQuery);
 static Query * WrapSubquery(Query *subquery);
 static bool CheckInsertSelectQuery(Query *query);
+static List * TwoPhaseInsertSelectTaskList(Oid targetRelationId, Query *insertSelectQuery,
+										   char *resultIdPrefix);
 
 
 /*
@@ -172,7 +175,7 @@ CheckInsertSelectQuery(Query *query)
  * plan for evaluating the SELECT on the coordinator.
  */
 DistributedPlan *
-CreateInsertSelectPlan(Query *originalQuery,
+CreateInsertSelectPlan(uint64 planId, Query *originalQuery,
 					   PlannerRestrictionContext *plannerRestrictionContext)
 {
 	DistributedPlan *distributedPlan = NULL;
@@ -193,7 +196,7 @@ CreateInsertSelectPlan(Query *originalQuery,
 		RaiseDeferredError(distributedPlan->planningError, DEBUG1);
 
 		/* if INSERT..SELECT cannot be distributed, pull to coordinator */
-		distributedPlan = CreateCoordinatorInsertSelectPlan(originalQuery);
+		distributedPlan = CreateCoordinatorInsertSelectPlan(planId, originalQuery);
 	}
 
 	return distributedPlan;
@@ -1126,7 +1129,7 @@ InsertPartitionColumnMatchesSelect(Query *query, RangeTblEntry *insertRte,
  * distributed table. The query plan can also be executed on a worker in MX.
  */
 static DistributedPlan *
-CreateCoordinatorInsertSelectPlan(Query *parse)
+CreateCoordinatorInsertSelectPlan(uint64 planId, Query *parse)
 {
 	Query *insertSelectQuery = copyObject(parse);
 	Query *selectQuery = NULL;
@@ -1175,6 +1178,40 @@ CreateCoordinatorInsertSelectPlan(Query *parse)
 
 	ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, selectRte);
 
+	if (insertSelectQuery->onConflict || insertSelectQuery->returningList != NIL)
+	{
+		/*
+		 * We cannot perform a COPY operation with RETURNING or ON CONFLICT.
+		 * We therefore perform the INSERT...SELECT in two phases. First we
+		 * copy the result of the SELECT query in a set of intermediate
+		 * results, one for each shard placement in the destination table.
+		 * Second, we perform an INSERT..SELECT..ON CONFLICT/RETURNING from
+		 * the intermediate results into the destination table. This is
+		 * represented in the plan by simply having both an
+		 * insertSelectSubuery and a workerJob to execute afterwards.
+		 */
+		uint64 jobId = INVALID_JOB_ID;
+		Job *workerJob = NULL;
+		List *taskList = NIL;
+		char *resultIdPrefix = InsertSelectResultIdPrefix(planId);
+
+		/* generate tasks for the INSERT..SELECT phase */
+		taskList = TwoPhaseInsertSelectTaskList(targetRelationId, insertSelectQuery,
+												resultIdPrefix);
+
+		workerJob = CitusMakeNode(Job);
+		workerJob->taskList = taskList;
+		workerJob->subqueryPushdown = false;
+		workerJob->dependedJobList = NIL;
+		workerJob->jobId = jobId;
+		workerJob->jobQuery = insertSelectQuery;
+		workerJob->requiresMasterEvaluation = false;
+
+		distributedPlan->workerJob = workerJob;
+		distributedPlan->hasReturning = insertSelectQuery->returningList != NIL;
+		distributedPlan->intermediateResultIdPrefix = resultIdPrefix;
+	}
+
 	distributedPlan->insertSelectSubquery = selectQuery;
 	distributedPlan->insertTargetList = insertSelectQuery->targetList;
 	distributedPlan->targetRelationId = targetRelationId;
@@ -1195,19 +1232,12 @@ CoordinatorInsertSelectSupported(Query *insertSelectQuery)
 	RangeTblEntry *insertRte = NULL;
 	RangeTblEntry *subqueryRte = NULL;
 	Query *subquery = NULL;
+	DeferredErrorMessage *deferredError = NULL;
 
-	if (list_length(insertSelectQuery->returningList) > 0)
+	deferredError = ErrorIfOnConflictNotSupported(insertSelectQuery);
+	if (deferredError)
 	{
-		return DeferredError(ERRCODE_FEATURE_NOT_SUPPORTED,
-							 "RETURNING is not supported in INSERT ... SELECT via "
-							 "coordinator", NULL, NULL);
-	}
-
-	if (insertSelectQuery->onConflict)
-	{
-		return DeferredError(ERRCODE_FEATURE_NOT_SUPPORTED,
-							 "ON CONFLICT is not supported in INSERT ... SELECT via "
-							 "coordinator", NULL, NULL);
+		return deferredError;
 	}
 
 	insertRte = ExtractInsertRangeTableEntry(insertSelectQuery);
@@ -1294,4 +1324,130 @@ WrapSubquery(Query *subquery)
 	outerQuery->targetList = newTargetList;
 
 	return outerQuery;
+}
+
+
+/*
+ * TwoPhaseInsertSelectTaskList generates a list of task for a query that
+ * inserts into a target relation and selects from a set of co-located
+ * intermediate results.
+ */
+static List *
+TwoPhaseInsertSelectTaskList(Oid targetRelationId, Query *insertSelectQuery,
+							 char *resultIdPrefix)
+{
+	List *taskList = NIL;
+
+	/*
+	 * Make a copy of the INSERT ... SELECT. We'll repeatedly replace the
+	 * subquery of insertResultQuery for different intermediate results and
+	 * then deparse it.
+	 */
+	Query *insertResultQuery = copyObject(insertSelectQuery);
+	RangeTblEntry *insertRte = ExtractInsertRangeTableEntry(insertResultQuery);
+	RangeTblEntry *selectRte = ExtractSelectRangeTableEntry(insertResultQuery);
+
+	DistTableCacheEntry *targetCacheEntry = DistributedTableCacheEntry(targetRelationId);
+	int shardCount = targetCacheEntry->shardIntervalArrayLength;
+	int shardOffset = 0;
+	uint32 taskIdIndex = 1;
+	uint64 jobId = INVALID_JOB_ID;
+
+	ListCell *targetEntryCell = NULL;
+	Relation distributedRelation = NULL;
+	TupleDesc destTupleDescriptor = NULL;
+
+	distributedRelation = heap_open(targetRelationId, RowExclusiveLock);
+	destTupleDescriptor = RelationGetDescr(distributedRelation);
+
+	/*
+	 * Hacky: adjust types since they will be coerced to match the table columns
+	 * by copy logic.
+	 */
+	foreach(targetEntryCell, insertSelectQuery->targetList)
+	{
+		TargetEntry *targetEntry = (TargetEntry *) lfirst(targetEntryCell);
+		Var *insertColumn = (Var *) targetEntry->expr;
+		Form_pg_attribute attr = TupleDescAttr(destTupleDescriptor, targetEntry->resno -
+											   1);
+
+		insertColumn->vartype = attr->atttypid;
+	}
+
+	for (shardOffset = 0; shardOffset < shardCount; shardOffset++)
+	{
+		ShardInterval *targetShardInterval =
+			targetCacheEntry->sortedShardIntervalArray[shardOffset];
+		uint64 shardId = targetShardInterval->shardId;
+		List *columnAliasList = NIL;
+		List *insertShardPlacementList = NIL;
+		Query *resultSelectQuery = NULL;
+		StringInfo queryString = makeStringInfo();
+		RelationShard *relationShard = NULL;
+		Task *modifyTask = NULL;
+		StringInfo resultId = makeStringInfo();
+
+		/* during COPY, the shard ID is appended to the result name */
+		appendStringInfo(resultId, "%s_" UINT64_FORMAT, resultIdPrefix, shardId);
+
+		/* generate the query on the intermediate result */
+		resultSelectQuery = BuildSubPlanResultQuery(insertSelectQuery->targetList,
+													columnAliasList, resultId->data);
+
+		/* put the intermediate result query in the INSERT..SELECT */
+		selectRte->subquery = resultSelectQuery;
+
+		/* setting an alias simplifies deparsing of RETURNING */
+		if (insertRte->alias == NULL)
+		{
+			Alias *alias = makeAlias(CITUS_TABLE_ALIAS, NIL);
+			insertRte->alias = alias;
+		}
+
+		/*
+		 * Generate a query string for the query that inserts into a shard and reads
+		 * from an intermediate result.
+		 */
+		deparse_shard_query(insertResultQuery, targetRelationId, shardId, queryString);
+		ereport(DEBUG2, (errmsg("distributed statement: %s", queryString->data)));
+
+		LockShardDistributionMetadata(shardId, ShareLock);
+		insertShardPlacementList = FinalizedShardPlacementList(shardId);
+
+		relationShard = CitusMakeNode(RelationShard);
+		relationShard->relationId = targetShardInterval->relationId;
+		relationShard->shardId = targetShardInterval->shardId;
+
+		modifyTask = CreateBasicTask(jobId, taskIdIndex, MODIFY_TASK, queryString->data);
+		modifyTask->dependedTaskList = NULL;
+		modifyTask->anchorShardId = shardId;
+		modifyTask->taskPlacementList = insertShardPlacementList;
+		modifyTask->upsertQuery = insertResultQuery->onConflict != NULL;
+		modifyTask->relationShardList = list_make1(relationShard);
+		modifyTask->replicationModel = targetCacheEntry->replicationModel;
+
+		taskList = lappend(taskList, modifyTask);
+
+		taskIdIndex++;
+	}
+
+	heap_close(distributedRelation, NoLock);
+
+	return taskList;
+}
+
+
+/*
+ * InsertSelectResultPrefix returns the prefix to use for intermediate
+ * results of an INSERT ... SELECT via the coordinator that runs in two
+ * phases in order to do RETURNING or ON CONFLICT.
+ */
+char *
+InsertSelectResultIdPrefix(uint64 planId)
+{
+	StringInfo resultIdPrefix = makeStringInfo();
+
+	appendStringInfo(resultIdPrefix, "insert_select_" UINT64_FORMAT, planId);
+
+	return resultIdPrefix->data;
 }

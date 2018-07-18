@@ -555,6 +555,7 @@ DeferredErrorMessage *
 ModifyQuerySupported(Query *queryTree, Query *originalQuery, bool multiShardQuery,
 					 PlannerRestrictionContext *plannerRestrictionContext)
 {
+	DeferredErrorMessage *deferredError = NULL;
 	Oid distributedTableId = ExtractFirstDistributedTableId(queryTree);
 	uint32 rangeTableId = 1;
 	Var *partitionColumn = PartitionColumn(distributedTableId, rangeTableId);
