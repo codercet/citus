@@ -198,8 +198,7 @@ ORDER BY 2 DESC, 1 DESC
 LIMIT 3;
 
 
--- should error out since reference table exist on the left side 
--- of the left lateral join
+-- reference tables in a subquery in the WHERE clause are ok
 SELECT user_id, value_2 FROM users_table WHERE
   value_1 > 1 AND value_1 < 3
   AND value_2 >= 5

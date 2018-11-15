@@ -237,8 +237,7 @@ LIMIT 3;
        6 |    10
 (1 row)
 
--- should error out since reference table exist on the left side 
--- of the left lateral join
+-- reference tables in a subquery in the WHERE clause are ok
 SELECT user_id, value_2 FROM users_table WHERE
   value_1 > 1 AND value_1 < 3
   AND value_2 >= 5
@@ -299,8 +298,12 @@ SELECT user_id, value_2 FROM users_table WHERE
 		HAVING sum(submit_card_info) > 0
 )
 ORDER BY 1, 2;
-ERROR:  cannot pushdown the subquery
-DETAIL:  There exist a reference table in the outer part of the outer join
+ user_id | value_2 
+---------+---------
+       5 |       5
+       5 |       5
+(2 rows)
+
 -- non-partition key equality with reference table
  SELECT 
   user_id, count(*) 
