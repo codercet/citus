@@ -1408,6 +1408,7 @@ TwoPhaseInsertSelectTaskList(Oid targetRelationId, Query *insertSelectQuery,
 		 * Generate a query string for the query that inserts into a shard and reads
 		 * from an intermediate result.
 		 */
+		insertResultQuery->cteList = NIL;
 		deparse_shard_query(insertResultQuery, targetRelationId, shardId, queryString);
 		ereport(DEBUG2, (errmsg("distributed statement: %s", queryString->data)));
 
