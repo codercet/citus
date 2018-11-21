@@ -38,6 +38,7 @@
 #include "parser/parse_coerce.h"
 #include "parser/parse_relation.h"
 #include "utils/lsyscache.h"
+#include "utils/rel.h"
 
 
 static DistributedPlan * CreateDistributedInsertSelectPlan(Query *originalQuery,

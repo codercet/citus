@@ -2232,7 +2232,11 @@ CitusCopyDestReceiverStartup(DestReceiver *dest, int operation,
 		copyStatement->relation = makeRangeVar(NULL, copyDest->intermediateResultIdPrefix,
 											   -1);
 
+		#if (PG_VERSION_NUM >= 100000)
 		formatResultOption = makeDefElem("format", (Node *) makeString("result"), -1);
+		#else
+		formatResultOption = makeDefElem("format", (Node *) makeString("result"));
+		#endif
 		copyStatement->options = list_make1(formatResultOption);
 	}
 	else

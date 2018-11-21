@@ -41,13 +41,16 @@ FROM
 ON CONFLICT DO NOTHING;
 
 -- Since partition columns do not match, pull the data to the coordinator
--- and update the non-partition column
-INSERT INTO target_table
-SELECT 
-	col_2, col_3 
-FROM
-	source_table_1
-ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 RETURNING *;
+-- and update the non-partition column. Query is wrapped by CTE to return
+-- ordered result.
+WITH inserted_table AS (
+	INSERT INTO target_table
+	SELECT 
+		col_2, col_3 
+	FROM
+		source_table_1
+	ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 RETURNING *
+) SELECT * FROM inserted_table ORDER BY 1;
 
 -- Subquery should be recursively planned due to the limit and do nothing on conflict
 INSERT INTO target_table
@@ -63,36 +66,41 @@ FROM (
 ON CONFLICT DO NOTHING;
 
 -- Subquery should be recursively planned due to the limit and update on conflict
-INSERT INTO target_table
-SELECT 
-	col_1, col_2
-FROM (
+-- Query is wrapped by CTE to return ordered result.
+WITH inserted_table AS (
+	INSERT INTO target_table
 	SELECT 
-		col_1, col_2, col_3 
-	FROM
-		source_table_1
-	LIMIT 5
-) as foo
-ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 RETURNING *;
+		col_1, col_2
+	FROM (
+		SELECT 
+			col_1, col_2, col_3 
+		FROM
+			source_table_1
+		LIMIT 5
+	) as foo
+	ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 RETURNING *
+) SELECT * FROM inserted_table ORDER BY 1;
 
--- Test with multiple subqueries
-INSERT INTO target_table
-SELECT 
-	col_1, col_2
-FROM (
-	(SELECT 
-		col_1, col_2, col_3 
-	FROM
-		source_table_1
-	LIMIT 5)
-	UNION
-	(SELECT
-		col_1, col_2, col_3
-	FROM
-		source_table_2
-	LIMIT 5)
-) as foo
-ON CONFLICT(col_1) DO UPDATE SET col_2 = 0 RETURNING *;
+-- Test with multiple subqueries. Query is wrapped by CTE to return ordered result.
+WITH inserted_table AS (
+	INSERT INTO target_table
+	SELECT 
+		col_1, col_2
+	FROM (
+		(SELECT 
+			col_1, col_2, col_3 
+		FROM
+			source_table_1
+		LIMIT 5)
+		UNION
+		(SELECT
+			col_1, col_2, col_3
+		FROM
+			source_table_2
+		LIMIT 5)
+	) as foo
+	ON CONFLICT(col_1) DO UPDATE SET col_2 = 0 RETURNING *
+) SELECT * FROM inserted_table ORDER BY 1;
 
 -- Get the select part from cte and do nothing on conflict
 WITH cte AS(
@@ -104,7 +112,8 @@ INSERT INTO target_table SELECT * FROM cte ON CONFLICT DO NOTHING;
 WITH cte AS(
 	SELECT col_1, col_2 FROM source_table_1
 )
-INSERT INTO target_table SELECT * FROM cte ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 + 1 RETURNING *;
+INSERT INTO target_table SELECT * FROM cte ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 + 1;
+SELECT * FROM target_table ORDER BY 1;
 
 -- Test with multiple CTEs
 WITH cte AS(
@@ -112,14 +121,17 @@ WITH cte AS(
 ), cte_2 AS(
 	SELECT col_1, col_2 FROM source_table_2
 )
-INSERT INTO target_table ((SELECT * FROM cte) UNION (SELECT * FROM cte_2)) ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 + 1 RETURNING *;
+INSERT INTO target_table ((SELECT * FROM cte) UNION (SELECT * FROM cte_2)) ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 + 1;
+SELECT * FROM target_table ORDER BY 1;
 
-WITH cte AS(
-	SELECT col_1, col_2, col_3 FROM source_table_1
-), cte_2 AS(
-	SELECT col_1, col_2 FROM cte
-)
-INSERT INTO target_table SELECT * FROM cte_2 ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 + 1 RETURNING *;
+WITH inserted_table AS (
+	WITH cte AS(
+		SELECT col_1, col_2, col_3 FROM source_table_1
+	), cte_2 AS(
+		SELECT col_1, col_2 FROM cte
+	)
+	INSERT INTO target_table SELECT * FROM cte_2 ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 + 1 RETURNING *
+) SELECT * FROM inserted_table ORDER BY 1;
 
 WITH cte AS (
 	WITH basic AS (
@@ -129,22 +141,27 @@ WITH cte AS (
 )
 UPDATE target_table SET col_2 = 4 WHERE col_1 IN (SELECT col_1 FROM cte);
 
+RESET client_min_messages;
+
 -- INSERT .. SELECT with different column types
 CREATE TABLE source_table_3(col_1 numeric, col_2 numeric, col_3 numeric);
 SELECT create_distributed_table('source_table_3','col_1');
 INSERT INTO source_table_3 VALUES(1,11,1),(2,22,2),(3,33,3),(4,44,4),(5,55,5);
+
+SET client_min_messages to debug1;
 
 INSERT INTO target_table
 SELECT 
 	col_1, col_2 
 FROM
 	source_table_3
-ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 RETURNING *;
+ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2;
+SELECT * FROM target_table ORDER BY 1;
+
+RESET client_min_messages;
 
 -- Test with shard_replication_factor = 2
 SET citus.shard_replication_factor to 2;
-
-RESET client_min_messages;
 
 DROP TABLE target_table, source_table_1, source_table_2;
 
@@ -187,14 +204,16 @@ FROM (
 		source_table_2
 	LIMIT 5)
 ) as foo
-ON CONFLICT(col_1) DO UPDATE SET col_2 = 0 RETURNING *;
+ON CONFLICT(col_1) DO UPDATE SET col_2 = 0;
+SELECT * FROM target_table ORDER BY 1;
 
 WITH cte AS(
 	SELECT col_1, col_2, col_3 FROM source_table_1
 ), cte_2 AS(
 	SELECT col_1, col_2 FROM cte
 )
-INSERT INTO target_table SELECT * FROM cte_2 ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 + 1 RETURNING *;
+INSERT INTO target_table SELECT * FROM cte_2 ON CONFLICT(col_1) DO UPDATE SET col_2 = EXCLUDED.col_2 + 1;
+SELECT * FROM target_table ORDER BY 1;
 
 RESET client_min_messages;
 DROP SCHEMA on_conflict CASCADE;
