@@ -1361,8 +1361,9 @@ TwoPhaseInsertSelectTaskList(Oid targetRelationId, Query *insertSelectQuery,
 	destTupleDescriptor = RelationGetDescr(distributedRelation);
 
 	/*
-	 * Hacky: adjust types since they will be coerced to match the table columns
-	 * by copy logic.
+	 * If the type of insert column and target table's column type is
+	 * different from each other. Cast insert column't type to target
+	 * table's column
 	 */
 	foreach(targetEntryCell, insertSelectQuery->targetList)
 	{
@@ -1371,7 +1372,17 @@ TwoPhaseInsertSelectTaskList(Oid targetRelationId, Query *insertSelectQuery,
 		Form_pg_attribute attr = TupleDescAttr(destTupleDescriptor, targetEntry->resno -
 											   1);
 
-		insertColumn->vartype = attr->atttypid;
+		if (insertColumn->vartype != attr->atttypid)
+		{
+			CoerceViaIO *coerceExpr = makeNode(CoerceViaIO);
+			coerceExpr->arg = (Expr *) copyObject(insertColumn);
+			coerceExpr->resulttype = attr->atttypid;
+			coerceExpr->resultcollid = attr->attcollation;
+			coerceExpr->coerceformat = COERCE_IMPLICIT_CAST;
+			coerceExpr->location = -1;
+
+			targetEntry->expr = (Expr *) coerceExpr;
+		}
 	}
 
 	for (shardOffset = 0; shardOffset < shardCount; shardOffset++)
@@ -1407,6 +1418,10 @@ TwoPhaseInsertSelectTaskList(Oid targetRelationId, Query *insertSelectQuery,
 		/*
 		 * Generate a query string for the query that inserts into a shard and reads
 		 * from an intermediate result.
+		 *
+		 * Since CTEs have already been converted to intermediate results, they need
+		 * to removed from the query. Otherwise, worker queries include both
+		 * intermediate results and CTEs in the query.
 		 */
 		insertResultQuery->cteList = NIL;
 		deparse_shard_query(insertResultQuery, targetRelationId, shardId, queryString);
