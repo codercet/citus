@@ -205,7 +205,7 @@ CreateInsertSelectPlan(uint64 planId, Query *originalQuery,
 
 
 /*
- * CreateDistributedInsertSelectPlan Creates a DistributedPlan for distributed
+ * CreateDistributedInsertSelectPlan creates a DistributedPlan for distributed
  * INSERT ... SELECT queries which could consists of multiple tasks.
  *
  * The function never returns NULL, it errors out if cannot create the DistributedPlan.
@@ -1224,8 +1224,8 @@ CreateCoordinatorInsertSelectPlan(uint64 planId, Query *parse)
 /*
  * CoordinatorInsertSelectSupported returns an error if executing an
  * INSERT ... SELECT command by pulling results of the SELECT to the coordinator
- * is unsupported because it uses RETURNING, ON CONFLICT, or an append-distributed
- * table.
+ * is unsupported because it needs to generate sequence values or insert into an
+ * append-distributed table.
  */
 static DeferredErrorMessage *
 CoordinatorInsertSelectSupported(Query *insertSelectQuery)
