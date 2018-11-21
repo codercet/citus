@@ -26,6 +26,7 @@ extern List * PlanClusterStmt(ClusterStmt *clusterStmt, const char *clusterComma
 /* extension.c - forward declarations */
 extern bool IsCitusExtensionStmt(Node *parsetree);
 extern void ErrorIfUnstableCreateOrAlterExtensionStmt(Node *parsetree);
+extern void ProcessCitusExtensionStmt(Node *parsetree);
 
 
 /* foreign_constraint.c - forward declarations */

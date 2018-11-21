@@ -13,11 +13,21 @@
 #include "citus_version.h"
 #include "distributed/commands.h"
 #include "distributed/metadata_cache.h"
+#include "distributed/worker_protocol.h"
 #include "nodes/parsenodes.h"
+#include "postmaster/postmaster.h"
+#include "utils/guc.h"
+
+#define DirectFunctionCall0(func) \
+	DirectFunctionCall0Coll(func, InvalidOid)
+#define ENABLE_SSL_QUERY "ALTER SYSTEM SET ssl TO on;"
 
 /* Local functions forward declarations for helper functions */
 static char * ExtractNewExtensionVersion(Node *parsetree);
+static Datum DirectFunctionCall0Coll(PGFunction func, Oid collation);
 
+/* use pg's implementation that is not exposed in a header file, fingers crossed */
+extern Datum pg_reload_conf(PG_FUNCTION_ARGS);
 
 /*
  * IsCitusExtensionStmt returns whether a given utility is a CREATE or ALTER
@@ -77,6 +87,32 @@ ErrorIfUnstableCreateOrAlterExtensionStmt(Node *parsetree)
 }
 
 
+void
+ProcessCitusExtensionStmt(Node *parsetree)
+{
+	if (IsA(parsetree, CreateExtensionStmt))
+	{
+		/*
+		 * during the creation of citus we check if ssl is on, if it is not on we will
+		 * turn it on and generate certificates and keys when not existing. This makes
+		 * citus secure by default.
+		 */
+
+		if (!EnableSSL)
+		{
+			/* execute the alter system statement to enable ssl on within postgres */
+			Node *enableSSLParseTree = ParseTreeNode(ENABLE_SSL_QUERY);
+			AlterSystemSetConfigFile((AlterSystemStmt *) enableSSLParseTree);
+
+			/*TODO check if certificates are existing, otherwise create the certificate and its key */
+
+			/* changing the ssl setting requires a reload of the configuration */
+			DirectFunctionCall0(pg_reload_conf);
+		}
+	}
+}
+
+
 /*
  * ExtractNewExtensionVersion returns the new extension version specified by
  * a CREATE or ALTER EXTENSION statement. Other inputs are not permitted. This
@@ -114,4 +150,24 @@ ExtractNewExtensionVersion(Node *parsetree)
 	}
 
 	return newVersion;
+}
+
+
+static Datum
+DirectFunctionCall0Coll(PGFunction func, Oid collation)
+{
+	FunctionCallInfoData fcinfo;
+	Datum result;
+
+	InitFunctionCallInfoData(fcinfo, NULL, 0, collation, NULL, NULL);
+
+	result = (*func)(&fcinfo);
+
+	/* Check for null result, since caller is clearly not expecting one */
+	if (fcinfo.isnull)
+	{
+		elog(ERROR, "function %p returned NULL", (void *) func);
+	}
+
+	return result;
 }

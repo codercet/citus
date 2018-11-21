@@ -129,7 +129,6 @@ multi_ProcessUtility(PlannedStmt *pstmt,
 {
 	Node *parsetree = pstmt->utilityStmt;
 	List *ddlJobs = NIL;
-	bool checkExtensionVersion = false;
 
 	if (IsA(parsetree, TransactionStmt))
 	{
@@ -150,10 +149,15 @@ multi_ProcessUtility(PlannedStmt *pstmt,
 		return;
 	}
 
-	checkExtensionVersion = IsCitusExtensionStmt(parsetree);
-	if (EnableVersionChecks && checkExtensionVersion)
+	if (IsCitusExtensionStmt(parsetree))
 	{
-		ErrorIfUnstableCreateOrAlterExtensionStmt(parsetree);
+		/* we intercept the creation of the citus extension, this allows us to do some checks and enable ssl if disabled */
+		if (EnableVersionChecks)
+		{
+			ErrorIfUnstableCreateOrAlterExtensionStmt(parsetree);
+		}
+
+		ProcessCitusExtensionStmt(parsetree);
 	}
 
 
