@@ -12,17 +12,23 @@
 
 #include "citus_version.h"
 #include "distributed/commands.h"
+#include "distributed/connection_management.h"
 #include "distributed/metadata_cache.h"
 #include "distributed/worker_protocol.h"
 #include "libpq/libpq.h"
 #include "nodes/parsenodes.h"
-#include "openssl/dsa.h"
-#include "openssl/ssl.h"
-#include "openssl/pem.h"
-#include "openssl/err.h"
-#include "openssl/x509.h"
 #include "postmaster/postmaster.h"
 #include "utils/guc.h"
+
+#ifdef USE_OPENSSL
+#include "openssl/dsa.h"
+#include "openssl/err.h"
+#include "openssl/pem.h"
+#include "openssl/rsa.h"
+#include "openssl/ssl.h"
+#include "openssl/x509.h"
+#endif
+
 
 #define DirectFunctionCall0(func) \
 	DirectFunctionCall0Coll(func, InvalidOid)
@@ -33,10 +39,12 @@
 /* Local functions forward declarations for helper functions */
 static char * ExtractNewExtensionVersion(Node *parsetree);
 static Datum DirectFunctionCall0Coll(PGFunction func, Oid collation);
+static bool ShouldUseAutoSSL(void);
 
 #ifdef USE_SSL
 static bool CreateCertificatesWhenNeeded(void);
-static EVP_PKEY * generate_key(void);
+static EVP_PKEY * generate_key_rsa(void);
+static EVP_PKEY * generate_key_dsa(void);
 static X509 * generate_x509(EVP_PKEY *pkey);
 static bool write_to_disk(EVP_PKEY *pkey, X509 *x509);
 #endif /* USE_SSL */
@@ -119,8 +127,10 @@ ProcessCitusExtensionStmt(Node *parsetree)
 		 */
 
 #ifdef USE_SSL
-		if (!EnableSSL)
+		if (!EnableSSL && ShouldUseAutoSSL())
 		{
+			elog(LOG, "citus extension created on postgres without ssl, turning it on");
+
 			/* execute the alter system statement to enable ssl on within postgres */
 			Node *enableSSLParseTree = ParseTreeNode(ENABLE_SSL_QUERY);
 			AlterSystemSetConfigFile((AlterSystemStmt *) enableSSLParseTree);
@@ -201,6 +211,21 @@ DirectFunctionCall0Coll(PGFunction func, Oid collation)
 }
 
 
+static bool
+ShouldUseAutoSSL(void)
+{
+	const char *sslmode = NULL;
+	sslmode = GetConnParam("sslmode");
+
+	if (strcmp(sslmode, "require") == 0)
+	{
+		return true;
+	}
+
+	return false;
+}
+
+
 #ifdef USE_SSL
 
 /*
@@ -226,9 +251,10 @@ CreateCertificatesWhenNeeded()
 		return false;
 	}
 
+	elog(LOG, "no certificate present, generating self signed certificate");
 
 	/* Generate the key. */
-	pkey = generate_key();
+	pkey = generate_key_dsa();
 	if (!pkey)
 	{
 		ereport(ERROR, (errmsg("error while generating private key")));
@@ -261,7 +287,7 @@ CreateCertificatesWhenNeeded()
 
 /* Generates a 2048-bit RSA key. */
 static EVP_PKEY *
-generate_key()
+generate_key_rsa()
 {
 	/* Allocate memory for the EVP_PKEY structure. */
 	EVP_PKEY *pkey = EVP_PKEY_new();
@@ -271,12 +297,71 @@ generate_key()
 		return NULL;
 	}
 
+	/* 1. generate rsa key */
+	BIGNUM *bne = BN_new();
+	int ret = BN_set_word(bne, RSA_F4);
+	if (ret != 1)
+	{
+		EVP_PKEY_free(pkey);
+		ereport(ERROR, (errmsg("unable to prepare bignum")));
+		return NULL;
+	}
+
 	/* Generate the RSA key and assign it to pkey. */
-	RSA *rsa = RSA_generate_key(2048, RSA_F4, NULL, NULL);
+	RSA *rsa = RSA_new();
+	ret = RSA_generate_key_ex(rsa, 2048, bne, NULL);
+	BN_free(bne);
+	if (ret != 1)
+	{
+		EVP_PKEY_free(pkey);
+		ereport(ERROR, (errmsg("unable to generate RSA key")));
+		return NULL;
+	}
+
 	if (!EVP_PKEY_assign_RSA(pkey, rsa))
 	{
-		ereport(ERROR, (errmsg("unable to generate RSA key")));
 		EVP_PKEY_free(pkey);
+		ereport(ERROR, (errmsg("unable to assign RSA key")));
+		return NULL;
+	}
+
+	/* The key has been generated, return it. */
+	return pkey;
+}
+
+
+static EVP_PKEY *
+generate_key_dsa()
+{
+	int ret = 0;
+
+	/* Allocate memory for the EVP_PKEY structure. */
+	EVP_PKEY *pkey = EVP_PKEY_new();
+	if (!pkey)
+	{
+		ereport(ERROR, (errmsg("unable to create EVP_PLEY")));
+		return NULL;
+	}
+
+	DSA *dsa = DSA_new();
+	ret = DSA_generate_parameters_ex(dsa, 1024, NULL, 0, NULL, NULL, NULL);
+	if (ret != 1)
+	{
+		EVP_PKEY_free(pkey);
+		ereport(ERROR, (errmsg("unable to generate DSA key parameters")));
+	}
+
+	ret = DSA_generate_key(dsa);
+	if (ret != 1)
+	{
+		EVP_PKEY_free(pkey);
+		ereport(ERROR, (errmsg("unable to generate DSA key")));
+	}
+
+	if (!EVP_PKEY_assign_DSA(pkey, dsa))
+	{
+		EVP_PKEY_free(pkey);
+		ereport(ERROR, (errmsg("unable to assign DSA key")));
 		return NULL;
 	}
 
