@@ -622,6 +622,8 @@ ac_includes_default="\
 
 ac_subst_vars='LTLIBOBJS
 LIBOBJS
+POSTGRES_LIBS
+POSTGRES_LDFLAGS
 POSTGRES_BUILDDIR
 POSTGRES_SRCDIR
 CITUS_LDFLAGS
@@ -3610,6 +3612,8 @@ _ACEOF
 # test infrastructure can rely on it.
 POSTGRES_SRCDIR=$(grep ^abs_top_srcdir $(dirname $($PG_CONFIG --pgxs))/../Makefile.global|cut -d ' ' -f3-)
 POSTGRES_BUILDDIR=$(grep ^abs_top_builddir $(dirname $($PG_CONFIG --pgxs))/../Makefile.global|cut -d ' ' -f3-)
+POSTGRES_LDFLAGS=$($PG_CONFIG --ldflags)
+POSTGRES_LIBS=$($PG_CONFIG --libs)
 
 
 # check for a number of CFLAGS that make development easier
@@ -4188,6 +4192,10 @@ CITUS_LDFLAGS="$LIBS"
 POSTGRES_SRCDIR="$POSTGRES_SRCDIR"
 
 POSTGRES_BUILDDIR="$POSTGRES_BUILDDIR"
+
+POSTGRES_LDFLAGS="$POSTGRES_LDFLAGS"
+
+POSTGRES_LIBS="$POSTGRES_LIBS"
 
 
 ac_config_files="$ac_config_files Makefile.global"
