@@ -4155,6 +4155,109 @@ fi
 
 fi
 
+#
+# openssl, this is automatically required in if postgres has been compiled with openssl
+#
+
+if [[ $POSTGRES_LIBS == *"-lcrypto"* ]]; then
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for CRYPTO_new_ex_data in -lcrypto" >&5
+$as_echo_n "checking for CRYPTO_new_ex_data in -lcrypto... " >&6; }
+if ${ac_cv_lib_crypto_CRYPTO_new_ex_data+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-lcrypto  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char CRYPTO_new_ex_data ();
+int
+main ()
+{
+return CRYPTO_new_ex_data ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_lib_crypto_CRYPTO_new_ex_data=yes
+else
+  ac_cv_lib_crypto_CRYPTO_new_ex_data=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_crypto_CRYPTO_new_ex_data" >&5
+$as_echo "$ac_cv_lib_crypto_CRYPTO_new_ex_data" >&6; }
+if test "x$ac_cv_lib_crypto_CRYPTO_new_ex_data" = xyes; then :
+  cat >>confdefs.h <<_ACEOF
+#define HAVE_LIBCRYPTO 1
+_ACEOF
+
+  LIBS="-lcrypto $LIBS"
+
+else
+  as_fn_error $? "library 'crypto' is required for OpenSSL" "$LINENO" 5
+fi
+
+fi
+if [[ $POSTGRES_LIBS == *"-lssl"* ]]; then
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for SSL_new in -lssl" >&5
+$as_echo_n "checking for SSL_new in -lssl... " >&6; }
+if ${ac_cv_lib_ssl_SSL_new+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-lssl  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char SSL_new ();
+int
+main ()
+{
+return SSL_new ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_lib_ssl_SSL_new=yes
+else
+  ac_cv_lib_ssl_SSL_new=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_ssl_SSL_new" >&5
+$as_echo "$ac_cv_lib_ssl_SSL_new" >&6; }
+if test "x$ac_cv_lib_ssl_SSL_new" = xyes; then :
+  cat >>confdefs.h <<_ACEOF
+#define HAVE_LIBSSL 1
+_ACEOF
+
+  LIBS="-lssl $LIBS"
+
+else
+  as_fn_error $? "library 'ssl' is required for OpenSSL" "$LINENO" 5
+fi
+
+fi
+
 # REPORTS_BASE_URL definition
 
 
