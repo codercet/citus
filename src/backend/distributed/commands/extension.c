@@ -129,10 +129,12 @@ ProcessCitusExtensionStmt(Node *parsetree)
 #ifdef USE_SSL
 		if (!EnableSSL && ShouldUseAutoSSL())
 		{
+			Node *enableSSLParseTree = NULL;
+
 			elog(LOG, "citus extension created on postgres without ssl, turning it on");
 
 			/* execute the alter system statement to enable ssl on within postgres */
-			Node *enableSSLParseTree = ParseTreeNode(ENABLE_SSL_QUERY);
+			enableSSLParseTree = ParseTreeNode(ENABLE_SSL_QUERY);
 			AlterSystemSetConfigFile((AlterSystemStmt *) enableSSLParseTree);
 
 			/*
@@ -240,6 +242,7 @@ CreateCertificatesWhenNeeded()
 	EVP_PKEY *pkey = NULL;
 	X509 *x509 = NULL;
 	bool filesWritten = false;
+	bool useDSA = true;
 
 	/*
 	 * check if we can load the certificate, when we can we assume the certificates are im
@@ -254,7 +257,15 @@ CreateCertificatesWhenNeeded()
 	elog(LOG, "no certificate present, generating self signed certificate");
 
 	/* Generate the key. */
-	pkey = generate_key_dsa();
+	if (useDSA)
+	{
+		pkey = generate_key_dsa();
+	}
+	else
+	{
+		pkey = generate_key_rsa();
+	}
+
 	if (!pkey)
 	{
 		ereport(ERROR, (errmsg("error while generating private key")));
@@ -289,8 +300,13 @@ CreateCertificatesWhenNeeded()
 static EVP_PKEY *
 generate_key_rsa()
 {
+	int ret = 0;
+	EVP_PKEY *pkey = NULL;
+	BIGNUM *bne = NULL;
+	RSA *rsa = NULL;
+
 	/* Allocate memory for the EVP_PKEY structure. */
-	EVP_PKEY *pkey = EVP_PKEY_new();
+	pkey = EVP_PKEY_new();
 	if (!pkey)
 	{
 		ereport(ERROR, (errmsg("unable to create EVP_PLEY")));
@@ -298,8 +314,8 @@ generate_key_rsa()
 	}
 
 	/* 1. generate rsa key */
-	BIGNUM *bne = BN_new();
-	int ret = BN_set_word(bne, RSA_F4);
+	bne = BN_new();
+	ret = BN_set_word(bne, RSA_F4);
 	if (ret != 1)
 	{
 		EVP_PKEY_free(pkey);
@@ -308,7 +324,7 @@ generate_key_rsa()
 	}
 
 	/* Generate the RSA key and assign it to pkey. */
-	RSA *rsa = RSA_new();
+	rsa = RSA_new();
 	ret = RSA_generate_key_ex(rsa, 2048, bne, NULL);
 	BN_free(bne);
 	if (ret != 1)
@@ -334,16 +350,18 @@ static EVP_PKEY *
 generate_key_dsa()
 {
 	int ret = 0;
+	EVP_PKEY *pkey = NULL;
+	DSA *dsa = NULL;
 
 	/* Allocate memory for the EVP_PKEY structure. */
-	EVP_PKEY *pkey = EVP_PKEY_new();
+	pkey = EVP_PKEY_new();
 	if (!pkey)
 	{
 		ereport(ERROR, (errmsg("unable to create EVP_PLEY")));
 		return NULL;
 	}
 
-	DSA *dsa = DSA_new();
+	dsa = DSA_new();
 	ret = DSA_generate_parameters_ex(dsa, 1024, NULL, 0, NULL, NULL, NULL);
 	if (ret != 1)
 	{
@@ -374,8 +392,11 @@ generate_key_dsa()
 static X509 *
 generate_x509(EVP_PKEY *pkey)
 {
+	X509 *x509 = NULL;
+	X509_NAME *name = NULL;
+
 	/* Allocate memory for the X509 structure. */
-	X509 *x509 = X509_new();
+	x509 = X509_new();
 	if (!x509)
 	{
 		ereport(ERROR, (errmsg("unable to create x509 cert")));
@@ -393,7 +414,7 @@ generate_x509(EVP_PKEY *pkey)
 	X509_set_pubkey(x509, pkey);
 
 	/* We want to copy the subject name to the issuer name. */
-	X509_NAME *name = X509_get_subject_name(x509);
+	name = X509_get_subject_name(x509);
 
 	/* Set the country code and common name. */
 	X509_NAME_add_entry_by_txt(name, X509_SUBJECT_COMMON_NAME, MBSTRING_ASC,
@@ -420,8 +441,12 @@ write_to_disk(EVP_PKEY *pkey, X509 *x509)
 	const char *keyFile = ssl_key_file;
 	const char *certFile = ssl_cert_file;
 
+	FILE *pkey_file = NULL;
+	FILE *x509_file = NULL;
+	bool ret = true;
+
 	/* Open the PEM file for writing the key to disk. */
-	FILE *pkey_file = fopen(keyFile, "wb");
+	pkey_file = fopen(keyFile, "wb");
 	if (!pkey_file)
 	{
 		ereport(ERROR, (errmsg("unable to open key file '%s' for writing", keyFile)));
@@ -429,7 +454,7 @@ write_to_disk(EVP_PKEY *pkey, X509 *x509)
 	}
 
 	/* Write the key to disk. */
-	bool ret = PEM_write_PrivateKey(pkey_file, pkey, NULL, NULL, 0, NULL, NULL);
+	ret = PEM_write_PrivateKey(pkey_file, pkey, NULL, NULL, 0, NULL, NULL);
 	fclose(pkey_file);
 
 	if (!ret)
@@ -439,7 +464,7 @@ write_to_disk(EVP_PKEY *pkey, X509 *x509)
 	}
 
 	/* Open the PEM file for writing the certificate to disk. */
-	FILE *x509_file = fopen(certFile, "wb");
+	x509_file = fopen(certFile, "wb");
 	if (!x509_file)
 	{
 		ereport(ERROR, (errmsg("unable to open certificate file '%s' for writing",

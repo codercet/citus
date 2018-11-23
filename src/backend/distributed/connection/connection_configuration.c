@@ -285,7 +285,9 @@ GetConnParams(ConnectionHashKey *key, char ***keywords, char ***values,
 const char *
 GetConnParam(const char *keyword)
 {
-	for (int i = 0; i < ConnParams.size; i++)
+	int i = 0;
+
+	for (i = 0; i < ConnParams.size; i++)
 	{
 		if (strcmp(keyword, ConnParams.keywords[i]) == 0)
 		{
