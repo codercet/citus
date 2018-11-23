@@ -3,6 +3,14 @@
 -- To test this we will verify that SSL is set to ON for all machines, and we will make
 -- sure connections to workers use SSL by having it required in citus.conn_nodeinfo and
 -- lastly we will inspect the ssl state for connections to the workers
+-- we only enable ssl during our tests on 10 and above due to a required restart in pg 9
+SHOW server_version \gset
+SELECT substring(:'server_version', '\d+')::int >= 10 AS version_ten_or_above;
+ version_ten_or_above 
+----------------------
+ t
+(1 row)
+
 -- we expect all nodes to have ssl on
 SHOW ssl;
  ssl 

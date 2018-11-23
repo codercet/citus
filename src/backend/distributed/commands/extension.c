@@ -38,7 +38,6 @@
 
 /* Local functions forward declarations for helper functions */
 static char * ExtractNewExtensionVersion(Node *parsetree);
-static Datum DirectFunctionCall0Coll(PGFunction func, Oid collation);
 static bool ShouldUseAutoSSL(void);
 
 #ifdef USE_SSL
@@ -49,8 +48,16 @@ static X509 * generate_x509(EVP_PKEY *pkey);
 static bool write_to_disk(EVP_PKEY *pkey, X509 *x509);
 #endif /* USE_SSL */
 
+/*
+ * For postgres 10 and higher we can enable ssl without restarting by reloading its
+ * configuration. Reloading the configuration requires the following functions.
+ */
+#if PG_VERSION_NUM >= 100000
+static Datum DirectFunctionCall0Coll(PGFunction func, Oid collation);
+
 /* use pg's implementation that is not exposed in a header file */
 extern Datum pg_reload_conf(PG_FUNCTION_ARGS);
+#endif
 
 /*
  * IsCitusExtensionStmt returns whether a given utility is a CREATE or ALTER
@@ -145,8 +152,20 @@ ProcessCitusExtensionStmt(Node *parsetree)
 			 */
 			CreateCertificatesWhenNeeded();
 
+#if PG_VERSION_NUM >= 100000
+
 			/* changing ssl configuration requires a reload of the configuration */
 			DirectFunctionCall0(pg_reload_conf);
+#else
+			ereport(WARNING, (errmsg("restart of postgres required"),
+							  errdetail("citus enables ssl in postgres. Postgres "
+										"versions before 10.0 require a restart before "
+										"ssl takes effect. Without a restart the "
+										"coordinator cannot connect to the workers."),
+							  errhint("when restarting is not possible disable ssl and "
+									  "change citus.conn_nodeinfo to not sslmode lower "
+									  "then require.")));
+#endif
 		}
 #endif /* USE_SSL */
 	}
@@ -193,6 +212,7 @@ ExtractNewExtensionVersion(Node *parsetree)
 }
 
 
+#if PG_VERSION_NUM >= 100000
 static Datum
 DirectFunctionCall0Coll(PGFunction func, Oid collation)
 {
@@ -211,6 +231,9 @@ DirectFunctionCall0Coll(PGFunction func, Oid collation)
 
 	return result;
 }
+
+
+#endif
 
 
 static bool
