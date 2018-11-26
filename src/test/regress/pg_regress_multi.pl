@@ -635,7 +635,7 @@ END
     # At the end of a run, replace redirected binary with original again
     if ($valgrind)
     {
-	revert_replace_postgres();
+        revert_replace_postgres();
     }
 }
 
@@ -711,7 +711,7 @@ if ($followercluster)
         {
           system("tail", ("-n20", catfile("tmp_check", "follower.$port", "log", "postmaster.log")));
           die "Could not start follower server";
-	}
+        }
     }
 }
 
