@@ -5,9 +5,21 @@
 -- sure connections to workers use SSL by having it required in citus.conn_nodeinfo and
 -- lastly we will inspect the ssl state for connections to the workers
 
--- we only enable ssl during our tests on 10 and above due to a required restart in pg 9
+-- ssl can only be enabled by default on installations of postgres 10 and above that has
+-- ssl linked during compile time. When ssl is not linked during compile time it defaults
+-- the ssl_ciphers setting to 'none'.
 SHOW server_version \gset
-SELECT substring(:'server_version', '\d+')::int >= 10 AS version_ten_or_above;
+SHOW ssl_ciphers \gset
+WITH features AS (
+    SELECT
+        substring(:'server_version', '\d+')::int >= 10 AS version_ten_or_above,
+        :'ssl_ciphers' != 'none' AS hasssl
+)
+SELECT (
+    true
+    AND version_ten_or_above
+    AND hasssl
+) AS ssl_by_default_supported FROM features;
 
 -- we expect all nodes to have ssl on
 SHOW ssl;
