@@ -268,6 +268,9 @@ CreateDistributedInsertSelectPlan(Query *originalQuery,
 													  taskIdIndex,
 													  allDistributionKeysInQueryAreEqual);
 
+		/* Planning error gelmisse return et, ustteki fonksiyona */
+		/* distributed plan gecir */
+
 		/* add the task if it could be created */
 		if (modifyTask != NULL)
 		{

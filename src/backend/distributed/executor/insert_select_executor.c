@@ -36,9 +36,17 @@
 #include "utils/snapmgr.h"
 
 
-static HTAB * ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
-										Query *selectQuery, EState *executorState,
-										char *intermediateResultIdPrefix);
+static void ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
+									  Query *selectQuery, EState *executorState);
+static HTAB * ExecuteSelectIntoColocatedIntermediateResults(Oid targetRelationId,
+															List *insertTargetList,
+															Query *selectQuery,
+															EState *executorState,
+															char *
+															intermediateResultIdPrefix);
+static List * BuildColumnNameListFromTargetList(Oid targetRelationId,
+												List *insertTargetList,
+												int *partitionColumnIndex);
 
 
 /*
@@ -75,13 +83,16 @@ CoordinatorInsertSelectExecScan(CustomScanState *node)
 			LockPartitionRelations(targetRelationId, RowExclusiveLock);
 		}
 
-		shardConnectionsHash = ExecuteSelectIntoRelation(targetRelationId,
-														 insertTargetList, selectQuery,
-														 executorState,
-														 intermediateResultIdPrefix);
 
 		if (distributedPlan->workerJob != NULL)
 		{
+			shardConnectionsHash = ExecuteSelectIntoColocatedIntermediateResults(
+				targetRelationId,
+				insertTargetList,
+				selectQuery,
+				executorState,
+				intermediateResultIdPrefix);
+
 			/*
 			 * If we also have a workerJob that means there is a second step
 			 * to the INSERT...SELECT. This happens when there is a RETURNING
@@ -121,6 +132,11 @@ CoordinatorInsertSelectExecScan(CustomScanState *node)
 									 hasReturning);
 			}
 		}
+		else
+		{
+			ExecuteSelectIntoRelation(targetRelationId, insertTargetList, selectQuery,
+									  executorState);
+		}
 
 		scanState->finishedRemoteScan = true;
 	}
@@ -132,33 +148,27 @@ CoordinatorInsertSelectExecScan(CustomScanState *node)
 
 
 /*
- * ExecuteSelectIntoRelation executes given SELECT query and inserts the
- * results into the target relation, which is assumed to be a distributed
- * table.
- *
- * If intermediateResultIdPrefix is not NULL, the data is instead written
- * to a set of intermediate results that are co-located with the table
- * for further processing (ON CONFLICT).
- *
- * ExecuteSelectIntoRelation returns the hash of connections that were
- * used to insert into the target relation.
+ * ExecuteSelectIntoColocatedIntermediateResults executes the given select query
+ * and inserts tuples into a set of intermediate results that are colocated with
+ * the target table for further processing of ON CONFLICT or RETURNING. It also
+ * returns the hash of connections that were used to insert tuplesinto the target
+ * relation.
  */
 static HTAB *
-ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
-						  Query *selectQuery, EState *executorState,
-						  char *intermediateResultIdPrefix)
+ExecuteSelectIntoColocatedIntermediateResults(Oid targetRelationId,
+											  List *insertTargetList,
+											  Query *selectQuery, EState *executorState,
+											  char *intermediateResultIdPrefix)
 {
 	ParamListInfo paramListInfo = executorState->es_param_list_info;
-
-	ListCell *insertTargetCell = NULL;
+	int *partitionColumnIndex = palloc0(sizeof(int));
 	List *columnNameList = NIL;
 	bool stopOnFailure = false;
 	char partitionMethod = 0;
-	Var *partitionColumn = NULL;
-	int partitionColumnIndex = -1;
-
 	CitusCopyDestReceiver *copyDest = NULL;
 	Query *queryCopy = NULL;
+
+	*partitionColumnIndex = -1;
 
 	partitionMethod = PartitionMethod(targetRelationId);
 	if (partitionMethod == DISTRIBUTE_BY_NONE)
@@ -166,31 +176,13 @@ ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
 		stopOnFailure = true;
 	}
 
-	partitionColumn = PartitionColumn(targetRelationId, 0);
+	/* Get column name list and partition column index for the target table */
+	columnNameList = BuildColumnNameListFromTargetList(targetRelationId, insertTargetList,
+													   partitionColumnIndex);
 
-	/* build the list of column names for the COPY statement */
-	foreach(insertTargetCell, insertTargetList)
-	{
-		TargetEntry *insertTargetEntry = (TargetEntry *) lfirst(insertTargetCell);
-		char *columnName = insertTargetEntry->resname;
-
-		/* load the column information from pg_attribute */
-		AttrNumber attrNumber = get_attnum(targetRelationId, columnName);
-
-		/* check whether this is the partition column */
-		if (partitionColumn != NULL && attrNumber == partitionColumn->varattno)
-		{
-			Assert(partitionColumnIndex == -1);
-
-			partitionColumnIndex = list_length(columnNameList);
-		}
-
-		columnNameList = lappend(columnNameList, insertTargetEntry->resname);
-	}
-
-	/* set up a DestReceiver that copies into the distributed table */
+	/* set up a DestReceiver that copies into the intermediate table */
 	copyDest = CreateCitusCopyDestReceiver(targetRelationId, columnNameList,
-										   partitionColumnIndex, executorState,
+										   *partitionColumnIndex, executorState,
 										   stopOnFailure, intermediateResultIdPrefix);
 
 	/*
@@ -207,4 +199,89 @@ ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
 	XactModificationLevel = XACT_MODIFICATION_DATA;
 
 	return copyDest->shardConnectionHash;
+}
+
+
+/*
+ * ExecuteSelectIntoRelation executes given SELECT query and inserts the
+ * results into the target relation, which is assumed to be a distributed
+ * table.
+ */
+static void
+ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
+						  Query *selectQuery, EState *executorState)
+{
+	ParamListInfo paramListInfo = executorState->es_param_list_info;
+	int *partitionColumnIndex = palloc0(sizeof(int));
+	List *columnNameList = NIL;
+	bool stopOnFailure = false;
+	char partitionMethod = 0;
+	CitusCopyDestReceiver *copyDest = NULL;
+	Query *queryCopy = NULL;
+
+	*partitionColumnIndex = -1;
+
+	partitionMethod = PartitionMethod(targetRelationId);
+	if (partitionMethod == DISTRIBUTE_BY_NONE)
+	{
+		stopOnFailure = true;
+	}
+
+	/* Get column name list and partition column index for the target table */
+	columnNameList = BuildColumnNameListFromTargetList(targetRelationId, insertTargetList,
+													   partitionColumnIndex);
+
+	/* set up a DestReceiver that copies into the distributed table */
+	copyDest = CreateCitusCopyDestReceiver(targetRelationId, columnNameList,
+										   *partitionColumnIndex, executorState,
+										   stopOnFailure, NULL);
+
+	/*
+	 * Make a copy of the query, since ExecuteQueryIntoDestReceiver may scribble on it
+	 * and we want it to be replanned every time if it is stored in a prepared
+	 * statement.
+	 */
+	queryCopy = copyObject(selectQuery);
+
+	ExecuteQueryIntoDestReceiver(queryCopy, paramListInfo, (DestReceiver *) copyDest);
+
+	executorState->es_processed = copyDest->tuplesSent;
+
+	XactModificationLevel = XACT_MODIFICATION_DATA;
+}
+
+
+/*
+ * BuildColumnNameListForCopyStatement build the column name list given the insert
+ * target list. Function also sets partition column index of the given target table.
+ */
+static List *
+BuildColumnNameListFromTargetList(Oid targetRelationId, List *insertTargetList,
+								  int *partitionColumnIndex)
+{
+	Var *partitionColumn = PartitionColumn(targetRelationId, 0);
+	ListCell *insertTargetCell = NULL;
+	List *columnNameList = NIL;
+
+	/* build the list of column names for the COPY statement */
+	foreach(insertTargetCell, insertTargetList)
+	{
+		TargetEntry *insertTargetEntry = (TargetEntry *) lfirst(insertTargetCell);
+		char *columnName = insertTargetEntry->resname;
+
+		/* load the column information from pg_attribute */
+		AttrNumber attrNumber = get_attnum(targetRelationId, columnName);
+
+		/* check whether this is the partition column */
+		if (partitionColumn != NULL && attrNumber == partitionColumn->varattno)
+		{
+			Assert(*partitionColumnIndex == -1);
+
+			*partitionColumnIndex = list_length(columnNameList);
+		}
+
+		columnNameList = lappend(columnNameList, insertTargetEntry->resname);
+	}
+
+	return columnNameList;
 }
