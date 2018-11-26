@@ -265,7 +265,7 @@ CreateCertificatesWhenNeeded()
 	EVP_PKEY *pkey = NULL;
 	X509 *x509 = NULL;
 	bool filesWritten = false;
-	bool useDSA = true;
+	bool useDSA = false;
 
 	/*
 	 * check if we can load the certificate, when we can we assume the certificates are im
