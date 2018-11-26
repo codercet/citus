@@ -3,7 +3,7 @@
 -- ===================================================================
 SET search_path TO subquery_and_ctes;
 
-
+SET citus.node_connection_timeout TO 10000;
 CREATE TABLE users_table_local AS SELECT * FROM users_table;
 
 SET client_min_messages TO DEBUG1;
