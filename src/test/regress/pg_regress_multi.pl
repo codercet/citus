@@ -318,7 +318,7 @@ if ($useMitmproxy)
   # make tests reproducible by never trying to negotiate ssl
   push(@pgOptions, '-c', "citus.node_conninfo=sslmode=disable");
 }
-elsif ($majorversion == '9.6')
+elsif ($majorversion == '9.6' || $followercluster)
 {
   # pg9.6 requires a restart to turnon ssl, as that is hard in the test suite we fall back
   # to the old behaviour of sslmode=prefer, this will not turn on ssl during extensions
