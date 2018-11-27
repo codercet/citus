@@ -86,13 +86,6 @@ CoordinatorInsertSelectExecScan(CustomScanState *node)
 
 		if (distributedPlan->workerJob != NULL)
 		{
-			shardConnectionsHash = ExecuteSelectIntoColocatedIntermediateResults(
-				targetRelationId,
-				insertTargetList,
-				selectQuery,
-				executorState,
-				intermediateResultIdPrefix);
-
 			/*
 			 * If we also have a workerJob that means there is a second step
 			 * to the INSERT...SELECT. This happens when there is a RETURNING
@@ -106,6 +99,13 @@ CoordinatorInsertSelectExecScan(CustomScanState *node)
 			List *prunedTaskList = NIL;
 			bool hasReturning = distributedPlan->hasReturning;
 			bool isModificationQuery = true;
+
+			shardConnectionsHash = ExecuteSelectIntoColocatedIntermediateResults(
+				targetRelationId,
+				insertTargetList,
+				selectQuery,
+				executorState,
+				intermediateResultIdPrefix);
 
 			/*
 			 * We cannot actually execute INSERT...SELECT tasks that read from
