@@ -45,8 +45,8 @@ static HTAB * ExecuteSelectIntoColocatedIntermediateResults(Oid targetRelationId
 															char *
 															intermediateResultIdPrefix);
 static List * BuildColumnNameListFromTargetList(Oid targetRelationId,
-												List *insertTargetList,
-												int *partitionColumnIndex);
+												List *insertTargetList);
+static int PartitionColumnIndexFromColumnList(Oid relationId, List *columnNameList);
 
 
 /*
@@ -161,14 +161,12 @@ ExecuteSelectIntoColocatedIntermediateResults(Oid targetRelationId,
 											  char *intermediateResultIdPrefix)
 {
 	ParamListInfo paramListInfo = executorState->es_param_list_info;
-	int *partitionColumnIndex = palloc0(sizeof(int));
+	int partitionColumnIndex = -1;
 	List *columnNameList = NIL;
 	bool stopOnFailure = false;
 	char partitionMethod = 0;
 	CitusCopyDestReceiver *copyDest = NULL;
 	Query *queryCopy = NULL;
-
-	*partitionColumnIndex = -1;
 
 	partitionMethod = PartitionMethod(targetRelationId);
 	if (partitionMethod == DISTRIBUTE_BY_NONE)
@@ -177,12 +175,14 @@ ExecuteSelectIntoColocatedIntermediateResults(Oid targetRelationId,
 	}
 
 	/* Get column name list and partition column index for the target table */
-	columnNameList = BuildColumnNameListFromTargetList(targetRelationId, insertTargetList,
-													   partitionColumnIndex);
+	columnNameList = BuildColumnNameListFromTargetList(targetRelationId,
+													   insertTargetList);
+	partitionColumnIndex = PartitionColumnIndexFromColumnList(targetRelationId,
+															  columnNameList);
 
 	/* set up a DestReceiver that copies into the intermediate table */
 	copyDest = CreateCitusCopyDestReceiver(targetRelationId, columnNameList,
-										   *partitionColumnIndex, executorState,
+										   partitionColumnIndex, executorState,
 										   stopOnFailure, intermediateResultIdPrefix);
 
 	/*
@@ -212,14 +212,12 @@ ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
 						  Query *selectQuery, EState *executorState)
 {
 	ParamListInfo paramListInfo = executorState->es_param_list_info;
-	int *partitionColumnIndex = palloc0(sizeof(int));
+	int partitionColumnIndex = -1;
 	List *columnNameList = NIL;
 	bool stopOnFailure = false;
 	char partitionMethod = 0;
 	CitusCopyDestReceiver *copyDest = NULL;
 	Query *queryCopy = NULL;
-
-	*partitionColumnIndex = -1;
 
 	partitionMethod = PartitionMethod(targetRelationId);
 	if (partitionMethod == DISTRIBUTE_BY_NONE)
@@ -228,12 +226,14 @@ ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
 	}
 
 	/* Get column name list and partition column index for the target table */
-	columnNameList = BuildColumnNameListFromTargetList(targetRelationId, insertTargetList,
-													   partitionColumnIndex);
+	columnNameList = BuildColumnNameListFromTargetList(targetRelationId,
+													   insertTargetList);
+	partitionColumnIndex = PartitionColumnIndexFromColumnList(targetRelationId,
+															  columnNameList);
 
 	/* set up a DestReceiver that copies into the distributed table */
 	copyDest = CreateCitusCopyDestReceiver(targetRelationId, columnNameList,
-										   *partitionColumnIndex, executorState,
+										   partitionColumnIndex, executorState,
 										   stopOnFailure, NULL);
 
 	/*
@@ -253,13 +253,11 @@ ExecuteSelectIntoRelation(Oid targetRelationId, List *insertTargetList,
 
 /*
  * BuildColumnNameListForCopyStatement build the column name list given the insert
- * target list. Function also sets partition column index of the given target table.
+ * target list.
  */
 static List *
-BuildColumnNameListFromTargetList(Oid targetRelationId, List *insertTargetList,
-								  int *partitionColumnIndex)
+BuildColumnNameListFromTargetList(Oid targetRelationId, List *insertTargetList)
 {
-	Var *partitionColumn = PartitionColumn(targetRelationId, 0);
 	ListCell *insertTargetCell = NULL;
 	List *columnNameList = NIL;
 
@@ -267,21 +265,40 @@ BuildColumnNameListFromTargetList(Oid targetRelationId, List *insertTargetList,
 	foreach(insertTargetCell, insertTargetList)
 	{
 		TargetEntry *insertTargetEntry = (TargetEntry *) lfirst(insertTargetCell);
-		char *columnName = insertTargetEntry->resname;
-
-		/* load the column information from pg_attribute */
-		AttrNumber attrNumber = get_attnum(targetRelationId, columnName);
-
-		/* check whether this is the partition column */
-		if (partitionColumn != NULL && attrNumber == partitionColumn->varattno)
-		{
-			Assert(*partitionColumnIndex == -1);
-
-			*partitionColumnIndex = list_length(columnNameList);
-		}
 
 		columnNameList = lappend(columnNameList, insertTargetEntry->resname);
 	}
 
 	return columnNameList;
+}
+
+
+/*
+ * PartitionColumnIndexFromColumnList returns the index of partition column from given
+ * column name list and relation ID. If given list doesn't contain the partition
+ * column, it returns -1.
+ */
+static int
+PartitionColumnIndexFromColumnList(Oid relationId, List *columnNameList)
+{
+	ListCell *columnNameCell = NULL;
+	Var *partitionColumn = PartitionColumn(relationId, 0);
+	int partitionColumnIndex = 0;
+
+	foreach(columnNameCell, columnNameList)
+	{
+		char *columnName = (char *) lfirst(columnNameCell);
+
+		AttrNumber attrNumber = get_attnum(relationId, columnName);
+
+		/* check whether this is the partition column */
+		if (partitionColumn != NULL && attrNumber == partitionColumn->varattno)
+		{
+			return partitionColumnIndex;
+		}
+
+		partitionColumnIndex++;
+	}
+
+	return -1;
 }
