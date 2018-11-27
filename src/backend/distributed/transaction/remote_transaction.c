@@ -1321,21 +1321,86 @@ Assign2PCIdentifier(MultiConnection *connection)
  * format ParsePreparedTransactionName returns false, and true otherwise.
  */
 bool
-ParsePreparedTransactionName(char *preparedTransactionName, int *groupId, int *procId,
-							 uint64 *transactionNumber, uint32 *connectionNumber)
+ParsePreparedTransactionName(char *preparedTransactionName,
+							 int *groupId, int *procId,
+							 uint64 *transactionNumber,
+							 uint32 *connectionNumber)
 {
-	const int expectedFieldCount = 4;
-	int parsedFieldCount = 0;
-	bool nameValid = false;
+	char *ptr = preparedTransactionName;
 
-	parsedFieldCount = sscanf(preparedTransactionName, PREPARED_TRANSACTION_NAME_FORMAT,
-							  groupId, procId, transactionNumber, connectionNumber);
-	if (parsedFieldCount == expectedFieldCount)
+	for (int i=0; i<4; i++)
 	{
-		nameValid = true;
+		ptr = strchr(ptr, '_');
+
+		if (ptr == NULL)
+		{
+			return false;
+		}
+
+		/* step ahead of the current '_' character */
+		++ptr;
+
+		switch (i)
+		{
+			case 0:
+			{
+				*groupId = strtol(ptr, NULL, 10);
+
+				if ((*groupId == 0 && errno == EINVAL)
+					|| (*groupId == INT_MAX && errno == ERANGE))
+				{
+					return false;
+				}
+				break;
+			}
+
+			case 1:
+			{
+				*procId = strtol(ptr, NULL, 10);
+
+				if ((*procId == 0 && errno == EINVAL)
+					|| (*procId == INT_MAX && errno == ERANGE))
+				{
+					return false;
+				}
+				break;
+			}
+
+			case 2:
+			{
+				*transactionNumber = strtoull(ptr, NULL, 10);
+
+				if ((*transactionNumber == 0 && errno != 0)
+					 || (*transactionNumber == ULLONG_MAX && errno == ERANGE))
+				{
+					return false;
+				}
+				break;
+			}
+
+			case 3:
+			{
+				uint64_t ulNumber = 0;
+				ulNumber = strtoul(ptr, NULL, 10);
+
+				if ((ulNumber == 0 && errno == EINVAL)
+					|| (ulNumber == ULONG_MAX && errno == ERANGE)
+					|| ulNumber > UINT_MAX)
+				{
+					return false;
+				}
+
+				*connectionNumber = ulNumber;
+				break;
+			}
+
+			default:
+				/* should not happen */
+				return false;
+		}
 	}
 
-	return nameValid;
+	return true;
 }
 
 
