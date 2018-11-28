@@ -16,6 +16,7 @@
 #include "distributed/metadata_cache.h"
 #include "distributed/worker_protocol.h"
 #include "libpq/libpq.h"
+#include "miscadmin.h"
 #include "nodes/parsenodes.h"
 #include "postmaster/postmaster.h"
 #include "utils/guc.h"
@@ -156,6 +157,7 @@ ProcessCitusExtensionStmt(Node *parsetree)
 
 			/* changing ssl configuration requires a reload of the configuration */
 			DirectFunctionCall0(pg_reload_conf);
+			ProcessConfigFile(PGC_SIGHUP);
 #else
 			ereport(WARNING, (errmsg("restart of postgres required"),
 							  errdetail("citus enables ssl in postgres. Postgres "
